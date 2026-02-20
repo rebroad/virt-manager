@@ -421,6 +421,7 @@ class vmmSnapshotPage(vmmGObjectUI):
         self._unapplied_changes = False
         self._snapshot_new = None
         self._snapshot_tree_mode = False
+        self._snapshot_tree_debug = os.environ.get("VMM_SNAPSHOT_TREE_DEBUG", "0") == "1"
 
         self._snapmenu = None
         self._init_ui()
@@ -461,7 +462,9 @@ class vmmSnapshotPage(vmmGObjectUI):
     def _init_ui(self):
         # pylint: disable=redefined-variable-type
         self.widget("snapshot-notebook").set_show_tabs(False)
-        self.widget("snapshot-tree-toggle").set_active(False)
+        tree_toggle = self.widget("snapshot-tree-toggle")
+        tree_toggle.set_active(False)
+        tree_toggle.connect("toggled", self._on_tree_toggled)
 
         buf = Gtk.TextBuffer()
         buf.connect("changed", self._description_changed)
@@ -525,6 +528,11 @@ class vmmSnapshotPage(vmmGObjectUI):
         ctime = xmlobj.creationTime if xmlobj.creationTime is not None else 0
         return (ctime, snap.get_name().lower(), snap.get_name())
 
+    def _tree_prefix_markup(self, indent_level):
+        if indent_level <= 0:
+            return ""
+        return "<span font_family='monospace'>%s</span>" % ("|&#160;&#160;" * indent_level)
+
     def _build_tree_rows(self, snapshots):
         by_name = {}
         children = defaultdict(list)
@@ -532,10 +540,31 @@ class vmmSnapshotPage(vmmGObjectUI):
         for snap in snapshots:
             by_name[snap.get_name()] = snap
 
+        def _parent_name(snap):
+            # Prefer XML parent metadata when present.
+            parent = snap.get_xmlobj().parent
+            if parent:
+                parent = parent.strip()
+            if parent and parent in by_name:
+                return parent
+
+            # Some snapshot XML can omit parent details; try libvirt parent API.
+            try:
+                parent_snap = snap.get_backend().getParent(0)
+                parent = parent_snap.getName()
+                if parent:
+                    parent = parent.strip()
+                if parent and parent in by_name:
+                    return parent
+            except Exception:
+                pass
+
+            return None
+
         roots = []
         for snap in snapshots:
             name = snap.get_name()
-            parent = snap.get_xmlobj().parent
+            parent = _parent_name(snap)
             if parent and parent in by_name:
                 children[parent].append(name)
             else:
@@ -548,36 +577,79 @@ class vmmSnapshotPage(vmmGObjectUI):
         for parent in list(children.keys()):
             children[parent] = sorted(children[parent], key=_name_key)
 
+        depth_cache = {}
+        size_cache = {}
+        depth_visiting = set()
+
+        def _depth(name):
+            if name in depth_cache:
+                return depth_cache[name]
+            if name in depth_visiting:
+                return 0
+
+            depth_visiting.add(name)
+            kids = children.get(name, [])
+            if not kids:
+                depth = 1
+            else:
+                depth = 1 + max(_depth(child_name) for child_name in kids)
+            depth_visiting.remove(name)
+            depth_cache[name] = depth
+            return depth
+
+        def _size(name):
+            if name in size_cache:
+                return size_cache[name]
+            kids = children.get(name, [])
+            total = 1 + sum(_size(child_name) for child_name in kids)
+            size_cache[name] = total
+            return total
+
+        for name in by_name:
+            _depth(name)
+            _size(name)
+
         rows = []
         visited = set()
 
-        def _walk(name, branch_depth, parent_is_fork):
+        def _walk(name, indent_level):
             if name in visited:
                 return
             visited.add(name)
             snap = by_name[name]
-            prefix = ""
-            if branch_depth > 0:
-                prefix = "  " * (branch_depth - 1)
-            if parent_is_fork:
-                prefix += "+- "
-
-            rows.append((snap, prefix))
+            rows.append((snap, indent_level))
 
             kids = children.get(name, [])
-            node_is_fork = len(kids) > 1
-            for child_name in kids:
-                next_depth = branch_depth + (1 if node_is_fork else 0)
-                _walk(child_name, next_depth, node_is_fork)
+            if not kids:
+                return
+
+            if len(kids) == 1:
+                _walk(kids[0], indent_level)
+                return
+
+            # Keep the longest descendant path at the current indent and
+            # indent shorter sibling paths.
+            trunk_child = kids[0]
+            for child_name in kids[1:]:
+                child_metric = (depth_cache[child_name], size_cache[child_name])
+                trunk_metric = (depth_cache[trunk_child], size_cache[trunk_child])
+                if child_metric > trunk_metric:
+                    trunk_child = child_name
+
+            side_children = [child_name for child_name in kids if child_name != trunk_child]
+            for offset, child_name in enumerate(side_children, start=1):
+                _walk(child_name, indent_level + offset)
+
+            _walk(trunk_child, indent_level)
 
         for root_name in roots:
-            _walk(root_name, 0, False)
+            _walk(root_name, 0)
 
         # Include orphaned nodes defensively if metadata is malformed.
         for snap in sorted(snapshots, key=self._snapshot_sort_key):
             if snap.get_name() in visited:
                 continue
-            _walk(snap.get_name(), 0, False)
+            _walk(snap.get_name(), 0)
 
         return rows
 
@@ -633,13 +705,16 @@ class vmmSnapshotPage(vmmGObjectUI):
         has_external = False
         has_internal = False
         snap_rows = self._build_tree_rows(snapshots) if self._snapshot_tree_mode else [
-            (snap, "") for snap in snapshots
+            (snap, 0) for snap in snapshots
         ]
-        for snap, prefix in snap_rows:
+        for snap, indent_level in snap_rows:
             desc = snap.get_xmlobj().description
             name = snap.get_name()
             state = snap.run_status()
-            display_name = f"{prefix}{name}" if prefix else name
+            if self._snapshot_tree_mode:
+                display_name = "%s%s" % (self._tree_prefix_markup(indent_level), xmlutil.xml_escape(name))
+            else:
+                display_name = xmlutil.xml_escape(name)
             if snap.is_external():
                 has_external = True
                 sortname = "3%s" % name
@@ -649,10 +724,21 @@ class vmmSnapshotPage(vmmGObjectUI):
                 sortname = "1%s" % name
                 label = _("%(vm)s\n<span size='small'>VM State: %(state)s</span>")
 
-            label = label % {"vm": xmlutil.xml_escape(display_name), "state": xmlutil.xml_escape(state)}
+            label = label % {"vm": display_name, "state": xmlutil.xml_escape(state)}
             model.append(
                 [name, label, desc, snap.run_status_icon_name(), sortname, snap.is_current()]
             )
+            if self._snapshot_tree_debug:
+                print(
+                    "SNAPTREE row mode=%s name=%s parent=%s indent=%d"
+                    % (
+                        self._snapshot_tree_mode and "tree" or "list",
+                        name,
+                        snap.get_xmlobj().parent,
+                        indent_level,
+                    ),
+                    flush=True,
+                )
 
         if has_internal and has_external and not self._snapshot_tree_mode:
             model.append([None, None, None, None, "2", False])
@@ -831,7 +917,12 @@ class vmmSnapshotPage(vmmGObjectUI):
         self._refresh_snapshots()
 
     def _on_tree_toggled(self, src):
-        self._snapshot_tree_mode = bool(src.get_active())
+        new_mode = bool(src.get_active())
+        if new_mode == self._snapshot_tree_mode:
+            return
+        if self._snapshot_tree_debug:
+            print("SNAPTREE toggled -> %s" % new_mode, flush=True)
+        self._snapshot_tree_mode = new_mode
         self._refresh_snapshots()
 
     def _on_start_clicked(self, ignore, ignore2=None, ignore3=None):
