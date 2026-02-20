@@ -454,6 +454,22 @@
                   </packing>
                 </child>
                 <child>
+                  <object class="GtkToggleButton" id="snapshot-tree-toggle">
+                    <property name="label" translatable="yes">Tree</property>
+                    <property name="visible">True</property>
+                    <property name="can-focus">True</property>
+                    <property name="receives-default">True</property>
+                    <property name="has-tooltip">True</property>
+                    <property name="tooltip-text" translatable="yes">Toggle compact tree view for snapshots</property>
+                    <signal name="toggled" handler="on_snapshot_tree_toggled" swapped="no"/>
+                  </object>
+                  <packing>
+                    <property name="expand">False</property>
+                    <property name="fill">False</property>
+                    <property name="position">3</property>
+                  </packing>
+                </child>
+                <child>
                   <object class="GtkButton" id="snapshot-delete">
                     <property name="visible">True</property>
                     <property name="can-focus">True</property>
@@ -478,7 +494,7 @@
                   <packing>
                     <property name="expand">False</property>
                     <property name="fill">False</property>
-                    <property name="position">3</property>
+                    <property name="position">4</property>
                   </packing>
                 </child>
               </object>
