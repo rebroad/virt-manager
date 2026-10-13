@@ -134,7 +134,6 @@ class vmmManager(vmmGObjectUI):
         self.memcol = None
         self.guestcpucol = None
         self.hostcpucol = None
-        self.spacer_txt = None
         self.init_vmlist()
 
         self.init_stats()
@@ -143,6 +142,20 @@ class vmmManager(vmmGObjectUI):
 
         self.update_current_selection()
         self.widget("vm-list").get_selection().connect("changed", self.update_current_selection)
+        self.widget("vm-graphs").get_selection().connect(
+            "changed", self._sync_graph_selection
+        )
+        self.widget("vm-list").get_selection().connect(
+            "changed", self._sync_name_selection
+        )
+        self.widget("vm-list").connect("row-expanded", self._sync_row_expanded)
+        self.widget("vm-list").connect("row-collapsed", self._sync_row_collapsed)
+        self.widget("vm-graphs").connect("row-expanded", self._sync_row_expanded)
+        self.widget("vm-graphs").connect("row-collapsed", self._sync_row_collapsed)
+        graphs_scroll = self.widget("vm-graphs-scroll")
+        graphs_scroll.set_vadjustment(self.widget("scrolledwindow1").get_vadjustment())
+        graphs_scroll.connect("size-allocate", self._resize_graph_columns)
+        self.widget("vm-list-container").connect("size-allocate", self._resize_graph_area)
 
         self.max_disk_rate = 10.0
         self.max_net_rate = 10.0
@@ -314,6 +327,10 @@ class vmmManager(vmmGObjectUI):
 
         model = Gtk.TreeStore(*rowtypes)
         vmlist.set_model(model)
+        graphs = self.widget("vm-graphs")
+        graphs.set_model(model)
+        graphs.set_show_expanders(False)
+        graphs.set_level_indentation(-(_style_get_prop(vmlist, "expander-size") + 3))
         vmlist.set_tooltip_column(ROW_HINT)
         vmlist.set_headers_visible(True)
         vmlist.set_level_indentation(-(_style_get_prop(vmlist, "expander-size") + 3))
@@ -338,21 +355,25 @@ class vmmManager(vmmGObjectUI):
         nameCol.add_attribute(inspection_os_icon, "visible", ROW_IS_VM)
 
         name_txt = Gtk.CellRendererText()
+        name_txt.set_property("ypad", 12)
         nameCol.pack_start(name_txt, True)
         nameCol.add_attribute(name_txt, "markup", ROW_MARKUP)
         nameCol.add_attribute(name_txt, "foreground", ROW_COLOR)
 
-        self.spacer_txt = Gtk.CellRendererText()
-        self.spacer_txt.set_property("ypad", 4)
-        self.spacer_txt.set_property("visible", False)
-        nameCol.pack_end(self.spacer_txt, False)
-
         def make_stats_column(title, colnum):
-            col = Gtk.TreeViewColumn(title)
-            col.set_min_width(140)
+            col = Gtk.TreeViewColumn()
+            col.set_title(title)
+            label = Gtk.Label(label=title)
+            label.set_line_wrap(True)
+            label.set_justify(Gtk.Justification.CENTER)
+            col.set_widget(label)
+            label.show()
+            col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+            col.set_fixed_width(140)
+            col.set_min_width(70)
 
             txt = Gtk.CellRendererText()
-            txt.set_property("ypad", 4)
+            txt.set_property("ypad", 12)
             col.pack_start(txt, True)
             col.add_attribute(txt, "visible", ROW_IS_CONN)
 
@@ -364,7 +385,7 @@ class vmmManager(vmmGObjectUI):
             col.add_attribute(img, "visible", ROW_IS_VM)
 
             col.set_sort_column_id(colnum)
-            vmlist.append_column(col)
+            graphs.append_column(col)
             return col
 
         self.guestcpucol = make_stats_column(_("CPU usage"), COL_GUEST_CPU)
@@ -380,6 +401,51 @@ class vmmManager(vmmGObjectUI):
         model.set_sort_func(COL_DISK, self.vmlist_disk_io_sorter)
         model.set_sort_func(COL_NETWORK, self.vmlist_network_usage_sorter)
         model.set_sort_column_id(COL_NAME, Gtk.SortType.ASCENDING)
+
+    def _sync_graph_selection(self, selection):
+        path = selection.get_selected_rows()[1]
+        if path:
+            self.widget("vm-list").get_selection().select_path(path[0])
+
+    def _sync_name_selection(self, selection):
+        path = selection.get_selected_rows()[1]
+        if path:
+            self.widget("vm-graphs").get_selection().select_path(path[0])
+
+    def _sync_row_expanded(self, treeview, path, treeiter):
+        other = self.widget(
+            "vm-graphs" if treeview is self.widget("vm-list") else "vm-list"
+        )
+        if not other.row_expanded(path):
+            other.expand_row(path, False)
+
+    def _sync_row_collapsed(self, treeview, path, treeiter):
+        other = self.widget(
+            "vm-graphs" if treeview is self.widget("vm-list") else "vm-list"
+        )
+        if other.row_expanded(path):
+            other.collapse_row(path)
+
+    def _resize_graph_columns(self, scroll, allocation):
+        columns = [
+            col for col in self.widget("vm-graphs").get_columns() if col.get_visible()
+        ]
+        if not columns:
+            return
+        width = max(1, allocation.width)
+        column_width = max(70, min(140, width // len(columns)))
+        for col in columns:
+            col.set_fixed_width(column_width)
+
+    def _resize_graph_area(self, container, allocation):
+        columns = [
+            col for col in self.widget("vm-graphs").get_columns() if col.get_visible()
+        ]
+        if not columns:
+            return
+        graph_width = max(1, allocation.width - 180)
+        graph_width = min(graph_width, 140 * len(columns))
+        self.widget("vm-graphs-scroll").set_size_request(graph_width, -1)
 
     ##################
     # Helper methods #
@@ -915,7 +981,20 @@ class vmmManager(vmmGObjectUI):
                 for c in [self.netcol, self.diskcol, self.memcol, self.guestcpucol, self.hostcpucol]
             ]
         )
-        self.spacer_txt.set_property("visible", not any_visible)
+        self.widget("vm-graphs-scroll").set_visible(any_visible)
+        name_scroll = self.widget("scrolledwindow1")
+        name_scroll.set_size_request(180 if any_visible else -1, -1)
+        name_scroll.set_hexpand(True)
+        self.widget("vm-list-container").set_child_packing(
+            name_scroll, True, True, 0, Gtk.PackType.START
+        )
+        if any_visible:
+            self._resize_graph_area(
+                self.widget("vm-list-container"),
+                self.widget("vm-list-container").get_allocation(),
+            )
+        else:
+            self.widget("vm-graphs-scroll").set_size_request(-1, -1)
 
     def toggle_network_traffic_visible_widget(self):
         self._toggle_graph_helper(
