@@ -348,6 +348,9 @@ class vmmManager(vmmGObjectUI):
 
         status_icon = Gtk.CellRendererPixbuf()
         status_icon.set_property("stock-size", Gtk.IconSize.DND)
+        # The name and graph panes are separate TreeViews. Match VM row
+        # heights so their independently laid out rows stay aligned.
+        status_icon.set_fixed_size(-1, 39)
         nameCol.pack_start(status_icon, False)
         nameCol.add_attribute(status_icon, "icon-name", ROW_STATUS_ICON)
         nameCol.add_attribute(status_icon, "visible", ROW_IS_VM)
@@ -358,6 +361,9 @@ class vmmManager(vmmGObjectUI):
         nameCol.add_attribute(inspection_os_icon, "visible", ROW_IS_VM)
 
         name_txt = Gtk.CellRendererText()
+        # Match the connection row height used by the graph pane. VM rows
+        # get their matching height from the status icon renderer above.
+        name_txt.set_fixed_size(-1, 27)
         nameCol.pack_start(name_txt, True)
         nameCol.add_attribute(name_txt, "markup", ROW_MARKUP)
         nameCol.add_attribute(name_txt, "foreground", ROW_COLOR)
