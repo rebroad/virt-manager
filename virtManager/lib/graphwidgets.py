@@ -129,6 +129,10 @@ class CellRendererSparkline(Gtk.CellRenderer):
         # shrink, so the box inset and the gap between boxes shrink with them.
         BORDER_INSET = 2
         GRAPH_INSET = 2
+        # The sparkline renderer has eight more pixels of vertical padding
+        # than the text renderer. Keep the row height while matching its
+        # visible height to the name and status text.
+        TEXT_ALIGNMENT_INSET = 8
         # We don't use yalign, since we expand to the entire height
         ignore = self.get_property("yalign")
         xalign = self.get_property("xalign")
@@ -141,7 +145,8 @@ class CellRendererSparkline(Gtk.CellRenderer):
         graph_x = box_x + GRAPH_INSET
         graph_y = cell_area.y + BORDER_INSET + GRAPH_INSET
         graph_width = box_width - (GRAPH_INSET * 2)
-        graph_height = cell_area.height - (BORDER_INSET * 2) - (GRAPH_INSET * 2)
+        box_height = cell_area.height - (BORDER_INSET * 2) - TEXT_ALIGNMENT_INSET
+        graph_height = box_height - (GRAPH_INSET * 2)
 
         pixels_per_point = float(max(0, graph_width - 1)) / max(1, len(self.data_array) - 1)
 
@@ -151,15 +156,16 @@ class CellRendererSparkline(Gtk.CellRenderer):
         # 1 == LINE_CAP_ROUND
         cr.set_line_cap(1)
 
-        # Draw gray graph border
+        # Draw the border first so the fill covers its inner half, matching
+        # the original one-pixel visible edge.
         cr.set_source_rgb(0.8828125, 0.8671875, 0.8671875)
-        # Fill the box, then draw its outline on top.
-        cr.set_source_rgb(BASECOLOR.red, BASECOLOR.green, BASECOLOR.blue)
-        cr.rectangle(box_x, box_y, box_width, cell_area.height - (BORDER_INSET * 2))
-        cr.fill()
-        cr.set_source_rgb(0.8828125, 0.8671875, 0.8671875)
-        cr.rectangle(box_x, box_y, box_width, cell_area.height - (BORDER_INSET * 2))
+        cr.set_line_width(1)
+        cr.rectangle(box_x, box_y, box_width, box_height)
         cr.stroke()
+
+        cr.set_source_rgb(BASECOLOR.red, BASECOLOR.green, BASECOLOR.blue)
+        cr.rectangle(box_x, box_y, box_width, box_height)
+        cr.fill()
 
         def get_y(index):
             baseline_y = graph_y + graph_height
