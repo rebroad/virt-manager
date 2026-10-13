@@ -453,6 +453,15 @@ class vmmManager(vmmGObjectUI):
         ]
         if not columns:
             return False
+
+        # Give the graph columns their minimum width first, then let the name
+        # pane reclaim up to 60 pixels when the window is narrow.
+        container_width = self.widget("vm-list-container").get_allocation().width
+        name_width = min(180, max(120, container_width - (len(columns) * 70) - 4))
+        name_scroll = self.widget("scrolledwindow1")
+        if name_scroll.get_size_request()[0] != name_width:
+            name_scroll.set_size_request(name_width, -1)
+
         width = max(1, self.graph_resize_width)
         column_width = max(70, min(140, width // len(columns)))
         for col in columns:
