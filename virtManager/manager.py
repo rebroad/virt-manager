@@ -355,7 +355,6 @@ class vmmManager(vmmGObjectUI):
         nameCol.add_attribute(inspection_os_icon, "visible", ROW_IS_VM)
 
         name_txt = Gtk.CellRendererText()
-        name_txt.set_property("ypad", 12)
         nameCol.pack_start(name_txt, True)
         nameCol.add_attribute(name_txt, "markup", ROW_MARKUP)
         nameCol.add_attribute(name_txt, "foreground", ROW_COLOR)
@@ -368,7 +367,7 @@ class vmmManager(vmmGObjectUI):
             col.set_expand(False)
 
             txt = Gtk.CellRendererText()
-            txt.set_property("ypad", 12)
+            txt.set_property("ypad", 4)
             col.pack_start(txt, True)
             col.add_attribute(txt, "visible", ROW_IS_CONN)
 
