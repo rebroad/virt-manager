@@ -5,6 +5,7 @@
 # See the COPYING file in the top-level directory.
 
 from gi.repository import GObject
+from gi.repository import GLib
 from gi.repository import Gtk
 from gi.repository import Gdk
 from gi.repository import GdkPixbuf
@@ -135,6 +136,8 @@ class vmmManager(vmmGObjectUI):
         self.guestcpucol = None
         self.hostcpucol = None
         self.graph_spacer_col = None
+        self.graph_resize_width = 0
+        self.graph_resize_source = 0
         self.init_vmlist()
 
         self.init_stats()
@@ -392,7 +395,7 @@ class vmmManager(vmmGObjectUI):
         self.graph_spacer_col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
         self.graph_spacer_col.set_fixed_width(0)
         self.graph_spacer_col.set_min_width(0)
-        self.graph_spacer_col.set_expand(True)
+        self.graph_spacer_col.set_expand(False)
         self.graph_spacer_col.set_clickable(False)
         graphs.append_column(self.graph_spacer_col)
 
@@ -429,18 +432,35 @@ class vmmManager(vmmGObjectUI):
             other.collapse_row(path)
 
     def _resize_graph_columns(self, scroll, allocation):
+        self.graph_resize_width = allocation.width
+        if not self.graph_resize_source:
+            self.graph_resize_source = GLib.idle_add(
+                self._apply_graph_column_widths
+            )
+
+    def _apply_graph_column_widths(self):
+        self.graph_resize_source = 0
         columns = [
             col
             for col in self.widget("vm-graphs").get_columns()
             if col.get_visible() and col is not self.graph_spacer_col
         ]
         if not columns:
-            return
-        width = max(1, allocation.width)
+            return False
+        width = max(1, self.graph_resize_width)
         column_width = max(70, min(140, width // len(columns)))
         for col in columns:
+            if col.get_min_width() != column_width:
+                col.set_min_width(column_width)
             if col.get_fixed_width() != column_width:
                 col.set_fixed_width(column_width)
+        spacer_width = max(0, width - (column_width * len(columns)))
+        if self.graph_spacer_col.get_min_width() != spacer_width:
+            self.graph_spacer_col.set_min_width(spacer_width)
+        if self.graph_spacer_col.get_fixed_width() != spacer_width:
+            self.graph_spacer_col.set_fixed_width(spacer_width)
+        self.widget("vm-graphs").queue_resize()
+        return False
 
     ##################
     # Helper methods #

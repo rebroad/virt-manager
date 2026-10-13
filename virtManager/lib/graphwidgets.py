@@ -130,22 +130,20 @@ class CellRendererSparkline(Gtk.CellRenderer):
         # Indent of graph from border
         GRAPH_INDENT = 2
         GRAPH_PAD = BORDER_PADDING + GRAPH_INDENT
+        # Keep eight pixels at each cell edge as columns shrink.
+        GRAPH_XPAD = (GRAPH_PAD * 2) + BORDER_PADDING
 
         # We don't use yalign, since we expand to the entire height
         ignore = self.get_property("yalign")
         xalign = self.get_property("xalign")
 
         # Set up graphing bounds
-        graph_x = cell_area.x + GRAPH_PAD
+        graph_x = cell_area.x + GRAPH_XPAD
         graph_y = cell_area.y + GRAPH_PAD
-        graph_width = cell_area.width - (GRAPH_PAD * 2)
+        graph_width = cell_area.width - (GRAPH_XPAD * 2)
         graph_height = cell_area.height - (GRAPH_PAD * 2)
 
-        pixels_per_point = graph_width // max(1, len(self.data_array) - 1)
-
-        # Graph width needs to be some multiple of the amount of data points
-        # we have
-        graph_width = pixels_per_point * max(1, len(self.data_array) - 1)
+        pixels_per_point = float(graph_width) / max(1, len(self.data_array) - 1)
 
         # Recalculate border width based on the amount we are graphing
         border_width = graph_width + (GRAPH_INDENT * 2)
