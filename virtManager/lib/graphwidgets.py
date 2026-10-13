@@ -125,35 +125,27 @@ class CellRendererSparkline(Gtk.CellRenderer):
         ignore = background_area
         ignore = flags
 
-        # Indent of the gray border around the graph
-        BORDER_PADDING = 2
-        # Indent of graph from border
-        GRAPH_INDENT = 2
-        GRAPH_PAD = BORDER_PADDING + GRAPH_INDENT
-        # Keep eight pixels at each cell edge as columns shrink.
-        GRAPH_XPAD = (GRAPH_PAD * 2) + BORDER_PADDING
-
+        # Keep the same proportions as the original graph cell when columns
+        # shrink, so the box inset and the gap between boxes shrink with them.
+        BORDER_INSET = 2
+        GRAPH_INSET = 2
         # We don't use yalign, since we expand to the entire height
         ignore = self.get_property("yalign")
         xalign = self.get_property("xalign")
 
+        side_inset = cell_area.width * (8.0 / 140.0)
+        box_width = cell_area.width - (side_inset * 2)
+        box_x = cell_area.x + (cell_area.width - box_width) * xalign
+
         # Set up graphing bounds
-        graph_x = cell_area.x + GRAPH_XPAD
-        graph_y = cell_area.y + GRAPH_PAD
-        graph_width = cell_area.width - (GRAPH_XPAD * 2)
-        graph_height = cell_area.height - (GRAPH_PAD * 2)
+        graph_x = box_x + GRAPH_INSET
+        graph_y = cell_area.y + BORDER_INSET + GRAPH_INSET
+        graph_width = box_width - (GRAPH_INSET * 2)
+        graph_height = cell_area.height - (BORDER_INSET * 2) - (GRAPH_INSET * 2)
 
-        pixels_per_point = float(graph_width) / max(1, len(self.data_array) - 1)
+        pixels_per_point = float(max(0, graph_width - 1)) / max(1, len(self.data_array) - 1)
 
-        # Recalculate border width based on the amount we are graphing
-        border_width = graph_width + (GRAPH_INDENT * 2)
-
-        # Align the widget
-        empty_space = cell_area.width - border_width - (BORDER_PADDING * 2)
-        if empty_space:
-            xalign_space = int(empty_space * xalign)
-            cell_area.x += xalign_space
-            graph_x += xalign_space
+        box_y = cell_area.y + BORDER_INSET
 
         cr.set_line_width(3)
         # 1 == LINE_CAP_ROUND
@@ -161,23 +153,13 @@ class CellRendererSparkline(Gtk.CellRenderer):
 
         # Draw gray graph border
         cr.set_source_rgb(0.8828125, 0.8671875, 0.8671875)
-        cr.rectangle(
-            cell_area.x + BORDER_PADDING,
-            cell_area.y + BORDER_PADDING,
-            border_width,
-            cell_area.height - (BORDER_PADDING * 2),
-        )
-        cr.stroke()
-
-        # Fill in basecolor box inside graph outline
+        # Fill the box, then draw its outline on top.
         cr.set_source_rgb(BASECOLOR.red, BASECOLOR.green, BASECOLOR.blue)
-        cr.rectangle(
-            cell_area.x + BORDER_PADDING,
-            cell_area.y + BORDER_PADDING,
-            border_width,
-            cell_area.height - (BORDER_PADDING * 2),
-        )
+        cr.rectangle(box_x, box_y, box_width, cell_area.height - (BORDER_INSET * 2))
         cr.fill()
+        cr.set_source_rgb(0.8828125, 0.8671875, 0.8671875)
+        cr.rectangle(box_x, box_y, box_width, cell_area.height - (BORDER_INSET * 2))
+        cr.stroke()
 
         def get_y(index):
             baseline_y = graph_y + graph_height
@@ -195,25 +177,24 @@ class CellRendererSparkline(Gtk.CellRenderer):
 
         points = []
         for index in range(0, len(self.data_array)):
-            x = int((index * pixels_per_point) + graph_x)
+            x = graph_x + (index * pixels_per_point)
             y = int(get_y(index))
 
             points.append((x, y))
 
-        cell_area.x = graph_x
-        cell_area.y = graph_y
-        cell_area.width = graph_width
-        cell_area.height = graph_height
-
         # Set color to dark blue for the actual sparkline
         cr.set_line_width(2)
         cr.set_source_rgb(0.421875, 0.640625, 0.73046875)
-        draw_line(cr, cell_area.y, cell_area.height, points)
+        cr.save()
+        cr.rectangle(graph_x, graph_y, graph_width, graph_height)
+        cr.clip()
+        draw_line(cr, graph_y, graph_height, points)
 
         # Set color to light blue for the fill
         cr.set_source_rgba(0.71484375, 0.84765625, 0.89453125, 0.5)
 
-        draw_fill(cr, cell_area.x, cell_area.y, cell_area.width, cell_area.height, points)
+        draw_fill(cr, graph_x, graph_y, graph_width, graph_height, points)
+        cr.restore()
         return
 
     def do_get_size(self, widget, cell_area=None):
