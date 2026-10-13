@@ -155,7 +155,6 @@ class vmmManager(vmmGObjectUI):
         graphs_scroll = self.widget("vm-graphs-scroll")
         graphs_scroll.set_vadjustment(self.widget("scrolledwindow1").get_vadjustment())
         graphs_scroll.connect("size-allocate", self._resize_graph_columns)
-        self.widget("vm-list-container").connect("size-allocate", self._resize_graph_area)
 
         self.max_disk_rate = 10.0
         self.max_net_rate = 10.0
@@ -361,13 +360,7 @@ class vmmManager(vmmGObjectUI):
         nameCol.add_attribute(name_txt, "foreground", ROW_COLOR)
 
         def make_stats_column(title, colnum):
-            col = Gtk.TreeViewColumn()
-            col.set_title(title)
-            label = Gtk.Label(label=title)
-            label.set_line_wrap(True)
-            label.set_justify(Gtk.Justification.CENTER)
-            col.set_widget(label)
-            label.show()
+            col = Gtk.TreeViewColumn(title)
             col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
             col.set_fixed_width(140)
             col.set_min_width(70)
@@ -436,16 +429,6 @@ class vmmManager(vmmGObjectUI):
         column_width = max(70, min(140, width // len(columns)))
         for col in columns:
             col.set_fixed_width(column_width)
-
-    def _resize_graph_area(self, container, allocation):
-        columns = [
-            col for col in self.widget("vm-graphs").get_columns() if col.get_visible()
-        ]
-        if not columns:
-            return
-        graph_width = max(1, allocation.width - 180)
-        graph_width = min(graph_width, 140 * len(columns))
-        self.widget("vm-graphs-scroll").set_size_request(graph_width, -1)
 
     ##################
     # Helper methods #
@@ -984,17 +967,10 @@ class vmmManager(vmmGObjectUI):
         self.widget("vm-graphs-scroll").set_visible(any_visible)
         name_scroll = self.widget("scrolledwindow1")
         name_scroll.set_size_request(180 if any_visible else -1, -1)
-        name_scroll.set_hexpand(True)
+        name_scroll.set_hexpand(not any_visible)
         self.widget("vm-list-container").set_child_packing(
-            name_scroll, True, True, 0, Gtk.PackType.START
+            name_scroll, not any_visible, True, 0, Gtk.PackType.START
         )
-        if any_visible:
-            self._resize_graph_area(
-                self.widget("vm-list-container"),
-                self.widget("vm-list-container").get_allocation(),
-            )
-        else:
-            self.widget("vm-graphs-scroll").set_size_request(-1, -1)
 
     def toggle_network_traffic_visible_widget(self):
         self._toggle_graph_helper(
