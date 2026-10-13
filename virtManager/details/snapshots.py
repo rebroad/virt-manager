@@ -7,7 +7,10 @@
 import datetime
 import glob
 import io
+import json
 import os
+import subprocess
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 from gi.repository import GdkPixbuf
@@ -422,6 +425,7 @@ class vmmSnapshotPage(vmmGObjectUI):
         self._snapshot_new = None
         self._snapshot_tree_mode = False
         self._snapshot_tree_debug = os.environ.get("VMM_SNAPSHOT_TREE_DEBUG", "0") == "1"
+        self._cow_review_report = None
 
         self._snapmenu = None
         self._init_ui()
@@ -437,6 +441,8 @@ class vmmSnapshotPage(vmmGObjectUI):
                 "on_snapshot_refresh_clicked": self._on_refresh_clicked,
                 "on_snapshot_tree_toggled": self._on_tree_toggled,
                 "on_snapshot_list_row_activated": self._on_start_clicked,
+                "on_snapshot_cow_save_clicked": self._on_cow_save_clicked,
+                "on_snapshot_cow_discard_clicked": self._on_cow_discard_clicked,
             }
         )
 
@@ -675,10 +681,245 @@ class vmmSnapshotPage(vmmGObjectUI):
         self._populate_snapshot_list(select_name)
 
     def vmwindow_refresh_vm_state(self):
+        self._update_cow_controls()
         if not self._initial_populate:
             self._populate_snapshot_list()
 
+    def _cow_config(self):
+        try:
+            root = ET.fromstring(self.vm._XMLDesc(self.vm._inactive_xml_flags))
+            pwg_ns = "urn:qemu:partition-write-guard:1"
+            metadata = root.find(f"./metadata/{{{pwg_ns}}}guardedCow")
+            numbers = []
+            if metadata is not None:
+                numbers = sorted(int(node.get("number")) for node in metadata.findall(f"{{{pwg_ns}}}partition"))
+                if not numbers or len(numbers) != len(set(numbers)):
+                    return None
+            disks = [d for d in root.findall("./devices/disk") if d.get("device") == "disk"]
+            if len(disks) != 1:
+                return None
+            disk = disks[0]
+            driver = disk.find("driver")
+            source = disk.find("source")
+            backing = disk.find("backingStore")
+            backing_format = backing.find("format") if backing is not None else None
+            backing_source = backing.find("source") if backing is not None else None
+            if (disk.get("type") != "file" or driver is None or driver.get("type") != "qcow2"
+                    or source is None or not source.get("file") or backing is None
+                    or backing_format is None or not backing_format.get("type")
+                    or backing_source is None or not (backing_source.get("dev") or backing_source.get("file"))):
+                return None
+            if metadata is None:
+                return {"guarded": False, "partitions": []}
+            commandline = root.find("{http://libvirt.org/schemas/domain/qemu/1.0}commandline")
+            args = [node.get("value", "") for node in commandline.findall("{http://libvirt.org/schemas/domain/qemu/1.0}arg")] if commandline is not None else []
+            guard = json.loads(args[1]) if len(args) == 2 and args[0] == "-blockdev" else {}
+            valid = (guard.get("driver") == "partition-write-guard"
+                    and guard.get("partitions") == numbers
+                    and guard.get("node-name")
+                    and guard.get("file", "").startswith("libvirt-")
+                    and guard.get("file", "").endswith("-format"))
+            return {"guarded": bool(valid), "partitions": numbers} if valid else None
+        except Exception as e:  # pragma: no cover - depends on local VM configuration
+            log.debug("Could not identify COW configuration: %s", e)
+            return None
+
+    def _update_cow_controls(self):
+        visible = self._cow_config() is not None
+        for name in ("snapshot-cow-save", "snapshot-cow-discard"):
+            button = self.widget(name)
+            button.set_visible(visible)
+            button.set_sensitive(visible and not self.vm.is_active() and not self.vm.has_managed_save())
+
+    def _run_cow_action(self, action):
+        args = ["pkexec", "/usr/local/libexec/qemu-cow-manager",
+                action, self.vm.get_name()]
+        if action == "commit":
+            args.append(self._cow_review_report["review_id"])
+        result = subprocess.run(
+            args,
+            check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip()
+                               or _("The privileged COW action failed."))
+        if action == "review":
+            self._cow_review_report = json.loads(result.stdout)
+        return result.stdout.strip()
+
+    def _start_cow_action(self, action):
+        config = self._cow_config()
+        if config is None:
+            return
+        if action == "discard":
+            message = _(
+                "Discard all COW changes? The physical disk will remain unchanged."
+            )
+            title = _("Discarding COW changes")
+            text = _("Replacing the COW overlay with a clean overlay")
+            if not self.err.yes_no(message):
+                return
+        else:
+            self._cow_review_report = None
+            title = _("Reviewing COW save")
+            text = _("Checking the stopped VM, backing disk, overlay, and planned write extents")
+        vmmAsyncJob.simple_async(
+            self._run_cow_action,
+            [action], self, title, text,
+            _("Error processing COW changes"),
+            finish_cb=(self._cow_review_finished if action == "review"
+                       else self.vmwindow_refresh_vm_state),
+        )
+
+    def _cow_review_finished(self):
+        report = self._cow_review_report
+        self.vmwindow_refresh_vm_state()
+        if report:
+            self._show_cow_review(report)
+
+    def _show_cow_review(self, report):
+        dialog = Gtk.Dialog(
+            title=_("COW save review"), parent=self.topwin,
+            flags=Gtk.DialogFlags.MODAL | Gtk.DialogFlags.DESTROY_WITH_PARENT,
+        )
+        dialog.set_default_size(980, 760)
+        dialog.add_button(_("Cancel"), Gtk.ResponseType.CANCEL)
+        can_commit = (report.get("review_id") and
+                      report.get("physical_disk_written") is False and
+                      report.get("commit_enabled") is True)
+        if can_commit:
+            dialog.add_button(_("Commit COW changes"), Gtk.ResponseType.ACCEPT)
+
+        box = Gtk.VBox(spacing=8)
+        box.set_border_width(10)
+        notice = Gtk.Label(label=report.get("notice", ""))
+        notice.set_line_wrap(True)
+        notice.set_xalign(0)
+        box.pack_start(notice, False, False, 0)
+
+        svg = report.get("disk_map_svg")
+        if svg:
+            try:
+                loader = GdkPixbuf.PixbufLoader.new_with_mime_type("image/svg+xml")
+                loader.write(svg.encode("utf-8"))
+                loader.close()
+                image = Gtk.Image.new_from_pixbuf(loader.get_pixbuf())
+                image_scroll = Gtk.ScrolledWindow()
+                image_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+                image_scroll.set_min_content_height(225)
+                image_scroll.add(image)
+                box.pack_start(image_scroll, False, True, 0)
+            except Exception as exc:
+                notice.set_text(notice.get_text() + "\n\n" +
+                                _("The disk map could not be rendered: %s") % exc)
+
+        lines = []
+        disk = report.get("disk", {})
+        if disk:
+            lines += [_("Backing disk"),
+                      "  %s" % disk.get("path", ""),
+                      "  %s %s; GPT ID %s; %s bytes; logical sector %s bytes" % (
+                          disk.get("model") or "", disk.get("serial") or disk.get("wwn") or "",
+                          disk.get("ptuuid") or "", disk.get("size_bytes", "?"),
+                          disk.get("logical_sector_size", "?")),
+                      "", _("Overlay"),
+                      "  %s; %s; %s bytes; cluster %s bytes; %s" % (
+                          report.get("overlay", {}).get("path", ""),
+                          report.get("overlay", {}).get("format", ""),
+                          report.get("overlay", {}).get("size", "?"),
+                          report.get("overlay", {}).get("cluster_size", "?"),
+                          report.get("overlay", {}).get("health", "")),
+                      "", _("Configured partitions (eligible; only planned extents below change)")]
+            for part in report.get("partitions", []):
+                allowed = part["number"] in {
+                    item["number"] for item in
+                    report.get("guard", {}).get("configured_partitions", [])
+                }
+                lines.append("  p%s %s, LBA %s..%s, %s bytes, PARTUUID %s, type %s" % (
+                    part["number"], _("eligible") if allowed else _("off-limits"),
+                    part.get("start_lba", "?"), part.get("end_lba", 1) - 1,
+                    part.get("size_bytes", "?"), part.get("partuuid", "?"),
+                    part.get("type", "?")))
+            lines += ["", _("Host mounts and swap")]
+            for part in report.get("host_state", {}).get("partitions", []):
+                mounts = ", ".join("%s (%s)" % (row["target"], row["mode"])
+                                   for row in part.get("mounts", [])) or _("unmounted")
+                lines.append("  p%s: %s; swap: %s" % (
+                    part["number"], mounts,
+                    _("yes") if part.get("swap") else _("no")))
+            lines.append("  " + _("Swap devices: %s") % ", ".join(
+                "%s (%s; configured partition: %s)" % (
+                    item["path"], item.get("major_minor", "unknown"),
+                    _("yes") if item.get("configured_partition") else _("no"))
+                for item in report.get("host_state", {}).get("swap", []))
+                         if report.get("host_state", {}).get("swap") else
+                         "  " + _("No active swap devices"))
+            shutdown = report.get("shutdown", {})
+            lines += ["", _("Guest shutdown status")]
+            lines.append("  " + _("Reason: %s; clean-shutdown snapshot eligible: %s") % (
+                shutdown.get("reason", "unknown"),
+                _("yes") if shutdown.get("clean_snapshot_eligible") is True
+                else _("no")))
+            lines += ["", _("Guarded commit plan")]
+            guard = report.get("guard", {})
+            lines.append("  " + _("Driver: %s; plan SHA-256: %s") % (
+                guard.get("driver", "?"), guard.get("plan_sha256", "?")))
+            base_fingerprint = guard.get("base_content_sha256")
+            if base_fingerprint:
+                lines.append("  " + _("Base content SHA-256 (%s): %s") % (
+                    guard.get("base_content_coverage", "scope not reported"),
+                    base_fingerprint))
+            extents = report.get("planned_extents", [])
+            lines.append("  " + _("%s exact planned write extents") % len(extents))
+            for extent in extents:
+                lines.append("  %s: bytes %s..%s; LBA %s..%s" % (
+                    extent.get("operation", "write"), extent["offset"],
+                    extent["offset"] + extent["length"] - 1,
+                    extent.get("start_lba", "?"), extent.get("end_lba", 1) - 1))
+        else:
+            lines += [_("File-backed COW save"),
+                      "  %s" % report.get("overlay", {}).get("path", ""),
+                      "  %s" % report.get("overlay", {}).get("backing", "")]
+        detail = Gtk.TextView()
+        detail.set_editable(False)
+        detail.set_cursor_visible(False)
+        detail.get_buffer().set_text("\n".join(lines))
+        details_scroll = Gtk.ScrolledWindow()
+        details_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        details_scroll.set_min_content_height(280)
+        details_scroll.add(detail)
+        box.pack_start(details_scroll, True, True, 0)
+        dialog.get_content_area().add(box)
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.ACCEPT and can_commit:
+            disk_name = (disk.get("wwn") or disk.get("serial") or
+                         disk.get("path") or
+                         report.get("overlay", {}).get("backing", ""))
+            message = _(
+                "Commit the reviewed COW changes now?\n\n"
+                "Target: %s\n"
+                "The helper will recheck the VM, disk, GPT layout, host isolation, "
+                "overlay, and exact write plan immediately before the first physical write."
+            ) % disk_name
+            if self.err.yes_no(message):
+                vmmAsyncJob.simple_async(
+                    self._run_cow_action, ["commit"], self,
+                    _("Committing COW changes"),
+                    _("Rechecking the reviewed plan and writing the allowed extents"),
+                    _("Error processing COW changes"),
+                    finish_cb=self.vmwindow_refresh_vm_state,
+                )
+
+    def _on_cow_save_clicked(self, ignore):
+        self._start_cow_action("review")
+
+    def _on_cow_discard_clicked(self, ignore):
+        self._start_cow_action("discard")
+
     def _set_error_page(self, msg):
+        self._update_cow_controls()
         self._set_snapshot_state(None)
         self.widget("snapshot-notebook").set_current_page(1)
         self.widget("snapshot-error-label").set_text(msg)
@@ -774,6 +1015,7 @@ class vmmSnapshotPage(vmmGObjectUI):
         return _make_screenshot_pixbuf(mime, open(filename, "rb").read())
 
     def _set_snapshot_state(self, snap=None):
+        self._update_cow_controls()
         self.widget("snapshot-notebook").set_current_page(0)
 
         xmlobj = snap and snap.get_xmlobj() or None
