@@ -134,6 +134,7 @@ class vmmManager(vmmGObjectUI):
         self.memcol = None
         self.guestcpucol = None
         self.hostcpucol = None
+        self.graph_spacer_col = None
         self.init_vmlist()
 
         self.init_stats()
@@ -154,6 +155,7 @@ class vmmManager(vmmGObjectUI):
         self.widget("vm-graphs").connect("row-collapsed", self._sync_row_collapsed)
         graphs_scroll = self.widget("vm-graphs-scroll")
         graphs_scroll.set_vadjustment(self.widget("scrolledwindow1").get_vadjustment())
+        graphs_scroll.set_overlay_scrolling(False)
         graphs_scroll.connect("size-allocate", self._resize_graph_columns)
 
         self.max_disk_rate = 10.0
@@ -329,7 +331,6 @@ class vmmManager(vmmGObjectUI):
         graphs = self.widget("vm-graphs")
         graphs.set_model(model)
         graphs.set_show_expanders(False)
-        graphs.set_level_indentation(-(_style_get_prop(vmlist, "expander-size") + 3))
         vmlist.set_tooltip_column(ROW_HINT)
         vmlist.set_headers_visible(True)
         vmlist.set_level_indentation(-(_style_get_prop(vmlist, "expander-size") + 3))
@@ -364,6 +365,7 @@ class vmmManager(vmmGObjectUI):
             col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
             col.set_fixed_width(140)
             col.set_min_width(70)
+            col.set_expand(False)
 
             txt = Gtk.CellRendererText()
             txt.set_property("ypad", 12)
@@ -386,6 +388,14 @@ class vmmManager(vmmGObjectUI):
         self.memcol = make_stats_column(_("Memory usage"), COL_MEM)
         self.diskcol = make_stats_column(_("Disk I/O"), COL_DISK)
         self.netcol = make_stats_column(_("Network I/O"), COL_NETWORK)
+
+        self.graph_spacer_col = Gtk.TreeViewColumn("")
+        self.graph_spacer_col.set_sizing(Gtk.TreeViewColumnSizing.FIXED)
+        self.graph_spacer_col.set_fixed_width(0)
+        self.graph_spacer_col.set_min_width(0)
+        self.graph_spacer_col.set_expand(True)
+        self.graph_spacer_col.set_clickable(False)
+        graphs.append_column(self.graph_spacer_col)
 
         model.set_sort_func(COL_NAME, self.vmlist_name_sorter)
         model.set_sort_func(COL_GUEST_CPU, self.vmlist_guest_cpu_usage_sorter)
@@ -421,7 +431,9 @@ class vmmManager(vmmGObjectUI):
 
     def _resize_graph_columns(self, scroll, allocation):
         columns = [
-            col for col in self.widget("vm-graphs").get_columns() if col.get_visible()
+            col
+            for col in self.widget("vm-graphs").get_columns()
+            if col.get_visible() and col is not self.graph_spacer_col
         ]
         if not columns:
             return
