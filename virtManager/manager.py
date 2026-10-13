@@ -405,14 +405,14 @@ class vmmManager(vmmGObjectUI):
         if path:
             self.widget("vm-graphs").get_selection().select_path(path[0])
 
-    def _sync_row_expanded(self, treeview, path, treeiter):
+    def _sync_row_expanded(self, treeview, treeiter, path):
         other = self.widget(
             "vm-graphs" if treeview is self.widget("vm-list") else "vm-list"
         )
         if not other.row_expanded(path):
             other.expand_row(path, False)
 
-    def _sync_row_collapsed(self, treeview, path, treeiter):
+    def _sync_row_collapsed(self, treeview, treeiter, path):
         other = self.widget(
             "vm-graphs" if treeview is self.widget("vm-list") else "vm-list"
         )
@@ -428,7 +428,8 @@ class vmmManager(vmmGObjectUI):
         width = max(1, allocation.width)
         column_width = max(70, min(140, width // len(columns)))
         for col in columns:
-            col.set_fixed_width(column_width)
+            if col.get_fixed_width() != column_width:
+                col.set_fixed_width(column_width)
 
     ##################
     # Helper methods #
