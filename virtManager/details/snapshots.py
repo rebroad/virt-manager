@@ -787,8 +787,12 @@ class vmmSnapshotPage(vmmGObjectUI):
         can_commit = (report.get("review_id") and
                       report.get("physical_disk_written") is False and
                       report.get("commit_enabled") is True)
+        acknowledgements = []
         if can_commit:
-            dialog.add_button(_("Commit COW changes"), Gtk.ResponseType.ACCEPT)
+            commit_button = dialog.add_button(
+                _("Commit COW changes"), Gtk.ResponseType.ACCEPT
+            )
+            commit_button.set_sensitive(False)
 
         box = Gtk.VBox(spacing=8)
         box.set_border_width(10)
@@ -796,22 +800,6 @@ class vmmSnapshotPage(vmmGObjectUI):
         notice.set_line_wrap(True)
         notice.set_xalign(0)
         box.pack_start(notice, False, False, 0)
-
-        svg = report.get("disk_map_svg")
-        if svg:
-            try:
-                loader = GdkPixbuf.PixbufLoader.new_with_mime_type("image/svg+xml")
-                loader.write(svg.encode("utf-8"))
-                loader.close()
-                image = Gtk.Image.new_from_pixbuf(loader.get_pixbuf())
-                image_scroll = Gtk.ScrolledWindow()
-                image_scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-                image_scroll.set_min_content_height(225)
-                image_scroll.add(image)
-                box.pack_start(image_scroll, False, True, 0)
-            except Exception as exc:
-                notice.set_text(notice.get_text() + "\n\n" +
-                                _("The disk map could not be rendered: %s") % exc)
 
         lines = []
         disk = report.get("disk", {})
@@ -889,11 +877,31 @@ class vmmSnapshotPage(vmmGObjectUI):
         details_scroll.set_min_content_height(280)
         details_scroll.add(detail)
         box.pack_start(details_scroll, True, True, 0)
+
+        if can_commit and report.get("schema") == "qemu-guarded-cow-review-v1":
+            acknowledgements_box = Gtk.VBox(spacing=4)
+            prompts = (
+                _("I reviewed the file-and-size differences for every affected partition and accept the listed changes."),
+                _("The read-only base and overlay filesystem comparisons completed without mount, scan, or read errors."),
+                _("Windows 11 shut down cleanly, and this is the overlay state I intend to save."),
+            )
+            for prompt in prompts:
+                check = Gtk.CheckButton(label=prompt)
+                check.connect(
+                    "toggled",
+                    lambda _button, commit=commit_button, checks=acknowledgements:
+                    commit.set_sensitive(all(item.get_active() for item in checks)),
+                )
+                acknowledgements.append(check)
+                acknowledgements_box.pack_start(check, False, False, 0)
+            box.pack_start(acknowledgements_box, False, False, 0)
+
         dialog.get_content_area().add(box)
         dialog.show_all()
         response = dialog.run()
         dialog.destroy()
-        if response == Gtk.ResponseType.ACCEPT and can_commit:
+        if (response == Gtk.ResponseType.ACCEPT and can_commit and
+                all(check.get_active() for check in acknowledgements)):
             disk_name = (disk.get("wwn") or disk.get("serial") or
                          disk.get("path") or
                          report.get("overlay", {}).get("backing", ""))
