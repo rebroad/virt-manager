@@ -857,6 +857,19 @@ class vmmSnapshotPage(vmmGObjectUI):
                 lines.append("  " + _("Base content SHA-256 (%s): %s") % (
                     guard.get("base_content_coverage", "scope not reported"),
                     base_fingerprint))
+            root_fingerprint = guard.get("base_root_content_sha256")
+            if root_fingerprint:
+                lines.append("  " + _("COW-root fingerprint (%s): %s") % (
+                    guard.get("base_root_content_coverage", "scope not reported"),
+                    root_fingerprint))
+                lines.append("  " + _("Current backing disk matches the recorded baseline"))
+                capture_basis = guard.get("base_root_capture_basis")
+                if capture_basis:
+                    lines.append("  " + _("Baseline capture basis: %s") %
+                                 capture_basis)
+                lines.append("  " + _("Baseline device metadata: %s") %
+                             json.dumps(guard.get("base_root_disk_metadata", {}),
+                                        sort_keys=True))
             extents = report.get("planned_extents", [])
             lines.append("  " + _("%s exact planned write extents") % len(extents))
             for extent in extents:
